@@ -1,33 +1,41 @@
 """ Modified from https://github.com/andersx/qml-ase/blob/master/calculators.py
 """
 
-
 import numpy as np
 import time
 import joblib
 from ase import Atoms
 from ase.calculators.calculator import Calculator, all_changes
-from sklearn.linear_model import Lasso
-from qml.representations import generate_fchl_acsf
-from qml.kernels.gradient_kernels import get_local_kernel, get_local_gradient_kernel
+try:
+    from sklearn.linear_model import Lasso
+    from qml.representations import generate_fchl_acsf
+    from qml.kernels.gradient_kernels import get_local_kernel, get_local_gradient_kernel
+    QML_AVAILABLE = True
+except:
+    QML_AVAILABLE = False
 
-class QMLCalculator(Calculator):
-    name = 'QMLCalculator'
+try:
+    from rdkit import Chem
+    from rdkit.Chem import AllChem, ChemicalForceFields
+    from rdkit.Chem import rdmolfiles
+    RDKIT_AVAILABLE = True
+except:
+    RDKIT_AVAILABLE = False
+
+
+class BaseCalculator(Calculator):
+    name = 'BaseCalculator'
     implemented_properties = ['energy', 'forces']
-
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-
-        model = joblib.load('models/reactive_fchl.pkl')
-        self._set_model(model)
-
         self.e_total = None
         self.forces = None
 
     def calculation_required(self, atoms, properties):
         if self.atoms != atoms:
             return True
-        elif self.atoms.get_positions() is not atoms.get_positions():
+        #elif self.atoms.get_positions() is not atoms.get_positions(): # Works for energy/force checks
+        elif not np.array_equal(self.atoms.get_positions(), atoms.get_positions()): # Works only for force checks
             return True
         for prop in properties:
             if prop == 'energy' and self.e_total is None:
@@ -54,6 +62,30 @@ class QMLCalculator(Calculator):
             self.results['forces'] = self.forces
 
         return
+
+    def get_potential_energy(self, atoms=None, force_consistent=False):
+        # Only having calculation_required calls in forces happens to be faster,
+        # since we can add more stringent criteria in the method
+        #if self.calculation_required(atoms, ["energy"]):
+        self.query(atoms)
+        return self.e_total
+
+    def get_forces(self, atoms=None):
+        if self.calculation_required(atoms, ["forces"]):
+            self.query(atoms=atoms)
+        return self.forces
+
+class QMLCalculator(BaseCalculator):
+    name = 'QMLCalculator'
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+        if not QML_AVAILABLE:
+            print("QML not available")
+            raise SystemExit
+
+        model = joblib.load('models/reactive_fchl.pkl')
+        self._set_model(model)
 
     def _set_model(self, model):
 
@@ -93,6 +125,7 @@ class QMLCalculator(Calculator):
         return features
 
     def query(self, atoms=None, print_time=False):
+        print(1)
 
         if print_time:
             start = time.time()
@@ -140,15 +173,70 @@ class QMLCalculator(Calculator):
         forces = energy_and_forces[1:].reshape(-1, 3)
         self.forces = forces * conv_force
 
-
         return
 
-    def get_potential_energy(self, atoms=None, force_consistent=False):
-        if self.calculation_required(atoms, ["energy"]):
-            self.query(atoms)
-        return self.e_total
+class RdkitCalculator(BaseCalculator):
+    name = 'RdkitCalculator'
 
-    def get_forces(self, atoms=None):
-        if self.calculation_required(atoms, ["forces"]):
-            self.query(atoms=atoms)
-        return self.forces
+    def __init__(self, molobj, **kwargs):
+        super().__init__(**kwargs)
+
+        if not RDKIT_AVAILABLE:
+            print("RDKIT not available")
+            raise SystemExit
+
+        self._set_model(molobj)
+
+    def _set_model(self, molobj):
+        self.molobj = molobj
+        ffprop, ff = self.get_forcefield(molobj)
+        conformer = molobj.GetConformer()
+
+        self.conformer = conformer
+        self.forcefield = ff
+        return
+
+    def _set_coordinates(self, coordinates):
+        for i, pos in enumerate(coordinates):
+            self.conformer.SetAtomPosition(i, pos)
+        return
+
+    def _calculate_energy(self):
+        energy = self.forcefield.CalcEnergy()
+        return energy
+
+    def _calculate_forces(self):
+        forces = self.forcefield.CalcGrad()
+        forces = np.array(forces).reshape(-1,3)
+        return -forces
+
+    def query(self, atoms=None, print_time=False):
+        # store latest positions
+        self.atoms = atoms
+
+        # kcal/mol til ev
+        # kcal/mol/aangstrom til ev / aangstorm
+        # Slightly different than QML counterpart
+        # due to intermediate conversion
+        conv_energy = 0.0433635093659
+        conv_force = 0.0433635093659
+
+        coordinates = atoms.get_positions()
+        self.molobj.ClearComputedProps()
+        self.conformer = self.molobj.GetConformer()
+
+        self._set_coordinates(coordinates)
+
+        # Energy prediction
+        energy_predicted = self._calculate_energy()
+        self.e_total = energy_predicted * conv_energy
+
+        # Force prediction
+        forces_predicted = self._calculate_forces()
+        self.forces = forces_predicted * conv_force
+        return
+
+    def get_forcefield(self, molobj):
+        ffprop = ChemicalForceFields.MMFFGetMoleculeProperties(molobj)
+        forcefield = ChemicalForceFields.MMFFGetMoleculeForceField(molobj, ffprop)
+        return ffprop, forcefield
