@@ -14,14 +14,6 @@ try:
 except:
     QML_AVAILABLE = False
 
-try:
-    from rdkit import Chem
-    from rdkit.Chem import AllChem, ChemicalForceFields
-    from rdkit.Chem import rdmolfiles
-    RDKIT_AVAILABLE = True
-except:
-    RDKIT_AVAILABLE = False
-
 
 class BaseCalculator(Calculator):
     name = 'BaseCalculator'
@@ -125,8 +117,6 @@ class QMLCalculator(BaseCalculator):
         return features
 
     def query(self, atoms=None, print_time=False):
-        print(1)
-
         if print_time:
             start = time.time()
 
@@ -174,69 +164,3 @@ class QMLCalculator(BaseCalculator):
         self.forces = forces * conv_force
 
         return
-
-class RdkitCalculator(BaseCalculator):
-    name = 'RdkitCalculator'
-
-    def __init__(self, molobj, **kwargs):
-        super().__init__(**kwargs)
-
-        if not RDKIT_AVAILABLE:
-            print("RDKIT not available")
-            raise SystemExit
-
-        self._set_model(molobj)
-
-    def _set_model(self, molobj):
-        self.molobj = molobj
-        ffprop, ff = self.get_forcefield(molobj)
-        conformer = molobj.GetConformer()
-
-        self.conformer = conformer
-        self.forcefield = ff
-        return
-
-    def _set_coordinates(self, coordinates):
-        for i, pos in enumerate(coordinates):
-            self.conformer.SetAtomPosition(i, pos)
-        return
-
-    def _calculate_energy(self):
-        energy = self.forcefield.CalcEnergy()
-        return energy
-
-    def _calculate_forces(self):
-        forces = self.forcefield.CalcGrad()
-        forces = np.array(forces).reshape(-1,3)
-        return -forces
-
-    def query(self, atoms=None, print_time=False):
-        # store latest positions
-        self.atoms = atoms
-
-        # kcal/mol til ev
-        # kcal/mol/aangstrom til ev / aangstorm
-        # Slightly different than QML counterpart
-        # due to intermediate conversion
-        conv_energy = 0.0433635093659
-        conv_force = 0.0433635093659
-
-        coordinates = atoms.get_positions()
-        self.molobj.ClearComputedProps()
-        self.conformer = self.molobj.GetConformer()
-
-        self._set_coordinates(coordinates)
-
-        # Energy prediction
-        energy_predicted = self._calculate_energy()
-        self.e_total = energy_predicted * conv_energy
-
-        # Force prediction
-        forces_predicted = self._calculate_forces()
-        self.forces = forces_predicted * conv_force
-        return
-
-    def get_forcefield(self, molobj):
-        ffprop = ChemicalForceFields.MMFFGetMoleculeProperties(molobj)
-        forcefield = ChemicalForceFields.MMFFGetMoleculeForceField(molobj, ffprop)
-        return ffprop, forcefield
