@@ -9,7 +9,7 @@ def optimize(molecule, calculator, trajectory_basename=None):
         dyn = ase.optimize.BFGS(molecule)
     else:
         dyn = ase.optimize.BFGS(molecule, trajectory=f"{trajectory_basename}.traj")
-    dyn.run(fmax=0.05, steps=1000)
+    dyn.run(fmax=0.01, steps=1000)
 
     if trajectory_basename is None:
         return
